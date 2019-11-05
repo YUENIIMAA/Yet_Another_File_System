@@ -10,11 +10,13 @@ disk::disk()
 void
 disk::read_block(blockid_t id, char *buf)
 {
+  memcpy(buf, blocks[id], BLOCK_SIZE);
 }
 
 void
 disk::write_block(blockid_t id, const char *buf)
 {
+  memcpy(blocks[id], buf, BLOCK_SIZE);
 }
 
 // block layer -----------------------------------------
@@ -90,7 +92,40 @@ inode_manager::alloc_inode(uint32_t type)
    * note: the normal inode block should begin from the 2nd inode block.
    * the 1st is used for root_dir, see inode_manager::inode_manager().
    */
-  return 1;
+  inode_t *new_inode = (inode_t*)malloc(sizeof(inode_t));
+  bzero(new_inode, sizeof(inode_t));
+
+  // 初始化inode的时间戳。
+  unsigned int current_time = (unsigned)time(NULL);
+  new_inode->atime = current_time;
+  new_inode->ctime = current_time;
+  new_inode->mtime = current_time;
+
+  // 初始化inode的大小。
+  new_inode->size = 0;
+
+  // 初始化inode的类型。
+  new_inode->type = type;
+  
+  // inode的inode_to_block暂时不需要初始化。
+
+  //从第1个inode开始查找inod_table中的空位。
+  uint32_t inode_number;
+  inode_t *temp;
+  for (uint32_t i = 1; i < INODE_NUM; i++) { //注意此处要从1开始...
+    temp = get_inode(i);
+    if (temp != NULL) {
+      continue;
+    }
+    else {
+      inode_number = i;
+      put_inode(i, new_inode);
+      break;
+    }
+  }
+  free(temp);
+  free(new_inode);
+  return inode_number;
 }
 
 void
@@ -190,8 +225,18 @@ inode_manager::getattr(uint32_t inum, extent_protocol::attr &a)
    * note: get the attributes of inode inum.
    * you can refer to "struct attr" in extent_protocol.h
    */
-  
-  return;
+  inode_t *inode = get_inode(inum);
+  if (inode != NULL) {
+    a.atime = inode->atime;
+    a.ctime = inode->ctime;
+    a.mtime = inode->mtime;
+    a.size = inode->size;
+    a.type = inode->type;
+    return;
+  }
+  else {
+    return;
+  }
 }
 
 void
