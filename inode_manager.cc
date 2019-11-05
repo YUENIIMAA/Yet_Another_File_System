@@ -147,7 +147,13 @@ inode_manager::free_inode(uint32_t inum)
    * note: you need to check if the inode is already a freed one;
    * if not, clear it, and remember to write back to disk.
    */
-
+  // 拿到想要删除的inode。
+  inode_t *inode = get_inode(inum);
+  if (inode != NULL) {
+    // 把type置零即可使得该inode在alloc_inode时因get_inode返回NULL而复用该inode。
+    inode->type = 0;
+    put_inode(inum, inode);
+  }
   return;
 }
 
@@ -345,15 +351,15 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
       }
       // 依次释放完间接块中指向的块之后，把间接块也释放掉。
       bm->free_block(inode->blocks[NDIRECT]);
+      // 最后释放直接块。
       for (unsigned int i = num_of_blocks_to_use; i < NDIRECT; i++) {
         bm->free_block(inode->blocks[i]);
         inode->blocks[i] = NULL;
       }
     }
   }
-  
   // 块数不发生变更的情况直接往里写就是了，因此省略。
-  // 分配完之后开始写入数据
+  // 分配完之后开始写入数据。
   printf("\tdebug: writing direct blocks\n");
   for (unsigned int i = 0; i < num_of_blocks_to_use && i < NDIRECT; i++) {
     bm->write_block(inode->blocks[i], buf + i * BLOCK_SIZE);
@@ -401,6 +407,27 @@ inode_manager::remove_file(uint32_t inum)
    * your code goes here
    * note: you need to consider about both the data block and inode of the file
    */
-  
+  printf("\tdebug: start deleting\n");
+  inode_t *inode = get_inode(inum);
+  unsigned size = inode->size;
+  printf("\tdebug: calculating blocks needed\n");
+  unsigned int num_of_blocks_to_free = size / BLOCK_SIZE;
+  if (size % BLOCK_SIZE != 0) {num_of_blocks_to_free++;}
+  printf("\tdebug: freeing direct blocks\n");
+  for (unsigned int i = 0; i < num_of_blocks_to_free && i < NDIRECT; i++) {
+    bm->free_block(inode->blocks[i]);
+  }
+  if (num_of_blocks_to_free > NDIRECT) {
+    printf("\tdebug: freeing indirect blocks\n");
+    uint *indirect_block = new uint[NINDIRECT];
+    bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
+    for (unsigned int i = 0;i < num_of_blocks_to_free - NDIRECT;i++) {
+      bm->free_block(indirect_block[i]);
+    }
+    bm->free_block(inode->blocks[NDIRECT]);
+  }
+  printf("\tdebug: freeing inode\n");
+  free_inode(inum);
+  printf("\tdebug: finished deleting\n");
   return;
 }
