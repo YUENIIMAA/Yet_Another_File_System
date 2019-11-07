@@ -144,7 +144,52 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
      * note: lookup is what you need to check if file exist;
      * after create file or dir, you must remember to modify the parent infomation.
      */
-
+    bool found;
+    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+        if (found) {
+            printf("create: file already exists");
+            r = EXIST;
+            return r;
+        }
+        else {
+            printf("create: something wrong with lookup");
+            r = IOERR;
+            return r;
+        }
+    }
+    else {
+        printf("create: file is ok to be created");
+    }
+    if (ec->create(extent_protocol::T_FILE, ino_out) != extent_protocol::OK) {
+        r = IOERR;
+        printf("create: failed to create file");
+        return r;
+    }
+    else {
+        printf("create: file created");
+        std::string parent_entries;
+        if (ec->get(parent, parent_entries) == extent_protocol::OK) {
+            printf("create: updating parent");
+            parent_entries.append(name);
+            parent_entries.append("/");
+            parent_entries.append(filename(ino_out));
+            parent_entries.append("/");
+            if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                printf("create: parent updated");
+            }
+            else {
+                r = IOERR;
+                printf("create: failed to update parent");
+                return r;
+            }
+        }
+        else {
+            r = IOERR;
+            printf("create: failed to read parent");
+            return r;
+        }
+    }
+    printf("create: job finished");
     return r;
 }
 
@@ -172,7 +217,30 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
      * note: lookup file from parent dir according to name;
      * you should design the format of directory content.
      */
-
+    std::list<dirent> dir_entries;
+    if (readdir(parent, dir_entries) == extent_protocol::OK) {
+        printf("lookup: readdir returned OK\n");
+        std::list<dirent>::iterator it;
+        for (it = dir_entries.begin(); it != dir_entries.end(); it++) {
+            printf("look up: extract entry -> name:%s, inum: %llu\n", it->name.c_str(), it->inum);
+            if (!it->name.compare(name)) {
+                printf("lookup: got match");
+                found = true;
+                ino_out = it->inum;
+                r = EXIST;
+                printf("lookup: job finished");
+                return r;
+            }
+        }
+        found = false;
+        printf("lookup: no match");
+        printf("lookup: job finished");
+    }
+    else {
+        printf("lookup: readdir didn't return OK\n");
+        r = IOERR;
+        return r;
+    }
     return r;
 }
 
@@ -186,7 +254,39 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
      * note: you should parse the dirctory content using your defined format,
      * and push the dirents to the list.
      */
-
+    // 获取dir这个inode的属性。
+    extent_protocol::attr dir_attributes;
+    ec->getattr(dir, dir_attributes);
+    // 检查这个inode是不是目录。
+    if (dir_attributes.type != extent_protocol::T_DIR) {
+        printf("readdir: inode read is not a dir\n");
+        r = IOERR;
+        return r;
+    }
+    else {
+        printf("readdir: inode is a dir: %s\n");
+        std::string dir_entries;
+        ec->get(dir, dir_entries);
+        printf("readdir: got dir entries: %s\n", dir_entries.c_str());
+        std::string entry_name, entry_inum;
+        int former_slash = 0, latter_slash = 0;
+        while (former_slash < dir_entries.size()) {
+            // 从前一个/开始找下一个/，二者之间的先是name后是inum，应该是成对出现的。
+            latter_slash = dir_entries.find('/', former_slash);
+            entry_name = dir_entries.substr(former_slash, latter_slash - former_slash);
+            former_slash = latter_slash + 1;
+            latter_slash = dir_entries.find('/', former_slash);
+            entry_inum = dir_entries.substr(former_slash, latter_slash - former_slash);
+            former_slash = latter_slash + 1;
+            // 创建新的entry扔进list里。
+            printf("readdir: extract entry -> name:%s, inum:%s\n", entry_name.c_str(),entry_inum.c_str());
+            dirent dir_entry;
+            dir_entry.name = entry_name;
+            dir_entry.inum = n2i(entry_inum);
+            list.push_back(dir_entry);
+        }
+    }
+    printf("readdir: job finished");
     return r;
 }
 

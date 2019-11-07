@@ -230,19 +230,20 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
     *buf_out = new char[num_of_blocks_used * BLOCK_SIZE];
     bzero(*buf_out, num_of_blocks_used * BLOCK_SIZE);
     for (unsigned int i = 0; i < NDIRECT && i < num_of_blocks_used; i++) {
-      printf("\tdebug: reading block[%u] <-- block[%u]\n", i, inode->blocks[i]);
+      printf("\tdebug: reading direct block[%u] <-- block[%u]\n", i, inode->blocks[i]);
       bm->read_block(inode->blocks[i], *buf_out + i * BLOCK_SIZE);
+    }
+    if (num_of_blocks_used > NDIRECT) {
+      uint *indirect_block = new uint[NINDIRECT];
+      bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
+      for (unsigned int i = 0; i < num_of_blocks_used - NDIRECT; i++) {
+        printf("\tdebug: reading indirect block[%u] <-- block[%u]\n", i, indirect_block[i]);
+        bm->read_block(indirect_block[i], *buf_out + (NDIRECT + i) * BLOCK_SIZE);
+      }
     }
     *size = inode->size;
     printf("\tdebug: %u written into size\n", inode->size);
-    /*
-    uint *indirect_block = new uint[NINDIRECT];
-    bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    for (unsigned int i = 0; i < num_of_blocks_used - NDIRECT; i++) {
-      bm->read_block(indirect_block[i], *buf_out);
-      if (i != num_of_blocks_used -NDIRECT - 1) {**buf_out++;}
-    }
-    */
+    printf("\tdebug: finished reading\n");
   }
   return;
 }
@@ -258,9 +259,7 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
    * is larger or smaller than the size of original inode
    */
   printf("\tdebug: start writing\n");
-  
   inode_t *inode = get_inode(inum);
-
   // 修改inode的时间戳。
   printf("\tdebug: updating time stamp\n");
   unsigned int current_time = (unsigned)time(NULL);
@@ -268,14 +267,11 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
   inode->ctime = current_time;
   inode->mtime = current_time;
   printf("\tdebug: time stamp updated\n");
-
   // 修改inode的大小。
   printf("\tdebug: updating size\n");
   unsigned int old_size = inode->size;
   inode->size = (unsigned)size;
   printf("\tdebug: size changed from %u to %u\n", old_size, size);
-
-  
   // 计算之前用了多少个块和当前写入需要多少个块。
   printf("\tdebug: calculating blocks needed\n");
   unsigned int num_of_blocks_used = old_size / BLOCK_SIZE;
@@ -407,6 +403,7 @@ inode_manager::remove_file(uint32_t inum)
    * your code goes here
    * note: you need to consider about both the data block and inode of the file
    */
+  // 删除基本复用之前[direct blocks + indirect blocks]和写入的代码，只不过此处alloc变成free。
   printf("\tdebug: start deleting\n");
   inode_t *inode = get_inode(inum);
   unsigned size = inode->size;

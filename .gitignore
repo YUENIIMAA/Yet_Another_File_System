@@ -1,0 +1,6 @@
+*.d
+*.o
+*.log
+.DS_Store
+/part1_tester
+/yfs_client
