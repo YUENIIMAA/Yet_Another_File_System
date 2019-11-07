@@ -53,7 +53,7 @@ yfs_client::isfile(inum inum)
         printf("isfile: %lld is a file\n", inum);
         return true;
     } 
-    printf("isfile: %lld is a dir\n", inum);
+    printf("isfile: %lld is not a file\n", inum);
     return false;
 }
 /** Your code here for Lab...
@@ -66,7 +66,19 @@ bool
 yfs_client::isdir(inum inum)
 {
     // Oops! is this still correct when you implement symlink?
-    return ! isfile(inum);
+    extent_protocol::attr a;
+
+    if (ec->getattr(inum, a) != extent_protocol::OK) {
+        printf("error getting attr\n");
+        return false;
+    }
+
+    if (a.type == extent_protocol::T_DIR) {
+        printf("isdir: %lld is a dir\n", inum);
+        return true;
+    } 
+    printf("isdir: %lld is not a dir\n", inum);
+    return false;
 }
 
 int
@@ -609,3 +621,89 @@ int yfs_client::unlink(inum parent,const char *name)
     printf("unlink: job done\n");
     return r;
 }
+
+int yfs_client::symlink(inum parent, const char *name, const char *link, inum &ino_out) {
+    int r = OK;
+    printf("symlink: job started\n");
+    printf("symlink: checking parent\n");
+    extent_protocol::attr inode_attributes;
+    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
+        printf("symlink: failed to get parent attributes\n");
+        r = IOERR;
+        return r;
+    }
+    if (inode_attributes.type != extent_protocol::T_DIR) {
+        printf("symlink: parent given is not a dir\n");
+        r = IOERR;
+        return r;
+    }
+    printf("symlink: parent is ok\n");
+    bool found;
+    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+        if (found) {
+            printf("symlink: symlink name already exists\n");
+            r = EXIST;
+            return r;
+        }
+        else {
+            printf("symlink: something wrong with lookup\n");
+            r = IOERR;
+            return r;
+        }
+    }
+    else {
+        printf("symlink: symlink is ok to be created\n");
+    }
+    printf("symlink: creating inode for symlink\n");
+    if (ec->create(extent_protocol::T_SYMLINK, ino_out) != extent_protocol::OK) {
+        printf("symlink: failed to create symlink\n");
+        r = IOERR;
+        return r;
+    }
+    else {
+        printf("symlink: inode for symlink created\n");
+        if (ec->put(ino_out, std::string(link)) != extent_protocol::OK) {
+            printf("symlink: failed to write the data of symlink\n");
+            r = IOERR;
+            return r;
+        }
+        else {
+            printf("symlink: inode for symlink written\n");
+            std::string parent_entries;
+            if (ec->get(parent, parent_entries) == extent_protocol::OK) {
+                printf("symlink: updating parent\n");
+                parent_entries.append(name);
+                parent_entries.append("/");
+                parent_entries.append(filename(ino_out));
+                parent_entries.append("/");
+                if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                    printf("symlink: parent updated\n");
+                }
+                else {
+                    r = IOERR;
+                    printf("symlink: failed to update parent\n");
+                    return r;
+                }
+            }
+            else {
+                r = IOERR;
+                printf("symlink: failed to read parent\n");
+                return r;
+            }
+        }
+    }
+    printf("symlink: job done\n");
+    return r;
+}
+
+int yfs_client::readlink(inum ino, std::string &link) {
+    int r = OK;
+    printf("readlink: job started\n");
+    if (ec->get(ino, link) != extent_protocol::OK) {
+        r = IOERR;
+        printf("readlink: failed to get file\n");
+        return r;
+    }
+    printf("readlink: job done\n");
+    return r;
+};
