@@ -139,21 +139,19 @@ yfs_client::setattr(inum ino, size_t size)
     }
     if (inode_attributes.type == 0) {
         printf("setattr: inode number is invalid\n");
-        r = IOERR;
+        r = NOENT;
         return r;
     }
     std::string data;
     if (ec->get(ino, data) == extent_protocol::OK) {
         printf("setattr: inode data fetched\n");
-        if (data.size() > size) {
+        if (inode_attributes.size > size) {
             printf("setattr: shrinking data\n");
             data = data.substr(0, size);
         }
-        else if (data.size() < size) {
+        else if (inode_attributes.size < size) {
             printf("setattr: expanding data\n");
-            for (size_t i = 0; i < size - data.size(); i++) {
-                data = data + "\0";
-            }
+            data.append(std::string(size - inode_attributes.size, '\0'));
         }
         else {
             printf("setattr: no need to change data\n");
@@ -249,6 +247,7 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
      */
     printf("mkdir: job started\n");
     printf("mkdir: checking parent\n");
+    
     extent_protocol::attr inode_attributes;
     if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
         printf("mkdir: failed to get parent attributes\n");
@@ -261,7 +260,7 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
         return r;
     }
     printf("mkdir: parent is ok\n");
-    bool found;
+    bool found = false;
     if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
         if (found) {
             printf("mkdir: dir name already exists\n");
@@ -526,23 +525,24 @@ int yfs_client::unlink(inum parent,const char *name)
      * note: you should remove the file using ec->remove,
      * and update the parent directory content.
      */
+    
     printf("unlink: job started\n");
     printf("unlink: checking parent\n");
     extent_protocol::attr inode_attributes;
     if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
-        printf("mkdir: failed to get parent attributes\n");
+        printf("unlink: failed to get parent attributes\n");
         r = IOERR;
         return r;
     }
     if (inode_attributes.type != extent_protocol::T_DIR) {
-        printf("mkdir: parent given is not a dir\n");
+        printf("unlink: parent given is not a dir\n");
         r = IOERR;
         return r;
     }
-    printf("mkdir: parent is ok\n");
+    printf("unlink: parent is ok\n");
     std::string parent_entries;
     if (ec->get(parent, parent_entries) == extent_protocol::OK) {
-            printf("mkdir: updating parent\n");
+            printf("unlink: updating parent\n");
             std::string entry_name, entry_inum;
             unsigned int former_slash = 0, latter_slash = 0;
             unsigned int former_checkpoint = 0, latter_checkpoint = 0;
