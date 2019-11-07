@@ -191,7 +191,7 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
     bool found;
     if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
         if (found) {
-            printf("create: file already exists\n");
+            printf("create: file name already exists\n");
             r = EXIST;
             return r;
         }
@@ -247,7 +247,68 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
      * note: lookup is what you need to check if directory exist;
      * after create file or dir, you must remember to modify the parent infomation.
      */
-
+    printf("mkdir: job started\n");
+    printf("mkdir: checking parent\n");
+    extent_protocol::attr inode_attributes;
+    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
+        printf("mkdir: failed to get parent attributes\n");
+        r = IOERR;
+        return r;
+    }
+    if (inode_attributes.type != extent_protocol::T_DIR) {
+        printf("mkdir: parent given is not a dir\n");
+        r = IOERR;
+        return r;
+    }
+    printf("mkdir: parent is ok\n");
+    bool found;
+    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+        if (found) {
+            printf("mkdir: dir name already exists\n");
+            r = EXIST;
+            return r;
+        }
+        else {
+            printf("mkdir: something wrong with lookup\n");
+            r = IOERR;
+            return r;
+        }
+    }
+    else {
+        printf("mkdir: dir is ok to be created\n");
+    }
+    printf("mkdir: creating new inode for dir\n");
+    if (ec->create(extent_protocol::T_DIR, ino_out) != extent_protocol::OK) {
+        r = IOERR;
+        printf("mkdir: failed to create new inode\n");
+        return r;
+    }
+    else {
+        printf("mkdir: new inode created\n");
+    }
+    std::string parent_entries;
+    if (ec->get(parent, parent_entries) == extent_protocol::OK) {
+        printf("mkdir: parent inode entries data fetched\n");
+        parent_entries.append(name);
+        parent_entries.append("/");
+        parent_entries.append(filename(ino_out));
+        parent_entries.append("/");
+        printf("mkdir: updating parent inode entries data\n");
+        if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+            printf("mkdir: parent inode entries data updated\n");
+        }
+        else {
+            r = IOERR;
+            printf("mkdir: failed to update parent inode\n");
+            return r;
+        }
+    }
+    else {
+        r = IOERR;
+        printf("mkdir: failed to fetch parent inode data\n");
+        return r;
+    }
+    printf("mkdir: job done\n");
     return r;
 }
 
@@ -465,7 +526,86 @@ int yfs_client::unlink(inum parent,const char *name)
      * note: you should remove the file using ec->remove,
      * and update the parent directory content.
      */
-
+    printf("unlink: job started\n");
+    printf("unlink: checking parent\n");
+    extent_protocol::attr inode_attributes;
+    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
+        printf("mkdir: failed to get parent attributes\n");
+        r = IOERR;
+        return r;
+    }
+    if (inode_attributes.type != extent_protocol::T_DIR) {
+        printf("mkdir: parent given is not a dir\n");
+        r = IOERR;
+        return r;
+    }
+    printf("mkdir: parent is ok\n");
+    std::string parent_entries;
+    if (ec->get(parent, parent_entries) == extent_protocol::OK) {
+            printf("mkdir: updating parent\n");
+            std::string entry_name, entry_inum;
+            unsigned int former_slash = 0, latter_slash = 0;
+            unsigned int former_checkpoint = 0, latter_checkpoint = 0;
+            bool found = false;
+            while (former_slash < parent_entries.size()) {
+                // 从前一个/开始找下一个/，二者之间的先是name后是inum，应该是成对出现的。
+                former_checkpoint = former_slash;
+                latter_slash = parent_entries.find('/', former_slash);
+                entry_name = parent_entries.substr(former_slash, latter_slash - former_slash);
+                former_slash = latter_slash + 1;
+                latter_slash = parent_entries.find('/', former_slash);
+                entry_inum = parent_entries.substr(former_slash, latter_slash - former_slash);
+                latter_checkpoint = latter_slash + 1;
+                former_slash = latter_slash + 1;
+                // 创建新的entry扔进list里。
+                if (!entry_name.compare(name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                std::string former_part, latter_part;
+                former_part = parent_entries.substr(0, former_checkpoint);
+                latter_part = parent_entries.substr(latter_checkpoint);
+                former_part.append(latter_part);
+                parent_entries = former_part;
+                if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                    printf("unlink: parent updated\n");
+                    printf("unlink: removing inode\n");
+                    if (ec->remove(n2i(entry_inum)) == extent_protocol::OK) {
+                        printf("unlink: inode removed\n");
+                    }
+                    else {
+                        r = IOERR;
+                        printf("unlink: failed to remove inode\n");
+                        return r;
+                    }
+                }
+                else {
+                    r = IOERR;
+                    printf("unlink: failed to update parent\n");
+                    return r;
+                }
+            }
+            else {
+                r = IOERR;
+                printf("unlink: did't find the file to delete\n");
+                return r;
+            }
+            if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                printf("unlink: parent updated\n");
+            }
+            else {
+                r = IOERR;
+                printf("unlink: failed to update parent\n");
+                return r;
+            }
+        }
+        else {
+            r = IOERR;
+            printf("unlink: failed to read parent\n");
+            return r;
+        }
+    printf("unlink: job done\n");
     return r;
 }
-
