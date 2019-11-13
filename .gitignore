@@ -5,3 +5,4 @@ lab1_tester
 foo.txt.yfs*
 tmprand
 .DS_Store
+.vscode/
