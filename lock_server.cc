@@ -6,12 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-/*
-lock_server::lock_server():
-  nacquire (0)
-{
-}
-*/
+// 修改构造函数配合新增的mutex锁（之前的写法说实话没看懂、、、）
 lock_server::lock_server() {
   nacquire = 0;
   mutex = PTHREAD_MUTEX_INITIALIZER;
