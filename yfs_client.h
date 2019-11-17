@@ -5,6 +5,8 @@
 
 #include "lock_protocol.h"
 #include "lock_client.h"
+// 增加带cache功能的lock_client_ccache。
+#include "lock_client_cache.h"
 
 //#include "yfs_protocol.h"
 #include "extent_client.h"
