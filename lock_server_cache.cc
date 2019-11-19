@@ -30,7 +30,7 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
   if (lock_table.find(lid) == lock_table.end()) {
     lock_table[lid].status = FREE;
     lock_table[lid].owner_id = "NULL";
-    lock_table[lid].poor_client_id = "NULL";
+    //lock_table[lid].poor_client_id = "NULL";
     lock_table[lid].waiting_list.clear();
   }
   if (lock_table[lid].status == FREE) {
@@ -49,7 +49,7 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
     // RPC还没发就改成REVOKING是可行而且更优的，这样只会有一个client的请求不停地发送撤销RPC，其它要同一把锁的只会默默等待，减少了RPC和冲突。
     lock_table[lid].status = REVOKING;
     lock_table[lid].waiting_list.push_back(id);
-    lock_table[lid].poor_client_id = id;
+    //lock_table[lid].poor_client_id = id;
     std::string lockOwner = lock_table[lid].owner_id;
     handle h(lockOwner);
     ret = lock_protocol::RETRY;
@@ -116,7 +116,7 @@ lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
     printf("lsc[%s]-r: no one is waiting for lock[%llu], released\n", id.c_str(), lid);
     lock_table[lid].status = FREE;
     lock_table[lid].owner_id = "NULL";
-    lock_table[lid].poor_client_id = "NULL";
+    //lock_table[lid].poor_client_id = "NULL";
     lock_table[lid].waiting_list.clear();
     ret = lock_protocol::OK;
     printf("lsc[%s]-r: unlock mutex\n", id.c_str());
@@ -159,7 +159,7 @@ lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
       return ret;
     }
     else {
-      lock_table[lid].poor_client_id = "NULL";
+      //lock_table[lid].poor_client_id = "NULL";
       lock_table[lid].status = HELD;
       printf("lsc[%s]-r: after retry, no more client is waiting, leaving it there\n", id.c_str());
       printf("lsc[%s]-r: lock mutex\n", id.c_str());
