@@ -66,7 +66,7 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
     std::list<std::string>::iterator it;
     for (it = lock_table[lid].waiting_list.begin();it != lock_table[lid].waiting_list.end();it++) {
       if (!id.compare(*it)) {
-        printf("lsc[%s]-a: revoking, client alreay in the waiting list\n", id.c_str(), lid);
+        printf("lsc[%s]-a: revoking, client alreay in the waiting list\n", id.c_str());
         ret = lock_protocol::RETRY;
         printf("lsc[%s]-a: unlock mutex\n", id.c_str());
         pthread_mutex_unlock(&mutex);

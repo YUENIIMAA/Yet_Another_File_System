@@ -39,7 +39,6 @@ bool
 yfs_client::isfile(inum inum)
 {
     extent_protocol::attr a;
-
     if (ec->getattr(inum, a) != extent_protocol::OK) {
         printf("error getting attr\n");
         return false;
@@ -210,33 +209,36 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
     // 有了lock 0我可以保证两个create不会交错执行。
     // 修正：上面的想法就tm是个全局锁沃日。
     // 修正：仔细一想lookup自己拿锁没有任何意义，看一眼放掉那改的时候一定还会有并行的问题、、、拿锁应该是调它的人干的活。
-    /*
+    
     lc->acquire(parent);
-    printf("create: job started\n");
+    printf("create: create %s in dir %llu\n", name, parent);
     bool found;
     std::string parent_entries;
-    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+    if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
             printf("create: file name already exists\n");
             r = EXIST;
-            goto release;
+            lc->release(parent);
+            return r;
         }
         else {
-            printf("create: something wrong with lookup\n");
-            r = IOERR;
-            goto release;
+            printf("create: file is ok to be created\n");
         }
     }
     else {
-        printf("create: file is ok to be created\n");
+        printf("create: something wrong with lookup\n");
+        r = IOERR;
+        lc->release(parent);
+        return r;
     }
     if (ec->create(extent_protocol::T_FILE, ino_out) != extent_protocol::OK) {
         r = IOERR;
         printf("create: failed to create file\n");
-        goto release;
+        lc->release(parent);
+        return r;
     }
     else {
-        printf("create: file created\n");
+        printf("create: file created, new inode id:%llu\n", ino_out);
         if (ec->get(parent, parent_entries) == extent_protocol::OK) {
             printf("create: updating parent\n");
             parent_entries.append(name);
@@ -245,52 +247,28 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
             parent_entries.append("/");
             if (ec->put(parent, parent_entries) == extent_protocol::OK) {
                 printf("create: parent updated\n");
+                r = OK;
+                printf("create: job done\n");
+                lc->release(parent);
+                return r;
             }
             else {
                 r = IOERR;
                 printf("create: failed to update parent\n");
-                goto release;
+                lc->release(parent);
+                return r;
             }
         }
         else {
             r = IOERR;
             printf("create: failed to read parent\n");
-            goto release;
+            lc->release(parent);
+            return r;
         }
     }
-    printf("create: job done\n");
-release:
+    r = IOERR;
+    printf("create: you should not see this message\n");
     lc->release(parent);
-    return r;
-    */
-   bool found = false;
-    lc->acquire(parent);
-    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
-        if (found) r = EXIST;
-        else r = IOERR;
-        lc->release(parent);
-        return r;
-    }
-    if (ec->create(extent_protocol::T_FILE, ino_out) != extent_protocol::OK) {
-        r = IOERR;
-        lc->release(parent);
-        return r;
-    }
-
-    // get parent content;
-    std::string buf;
-    ec->get(parent, buf);
-   
-    // append created entry to parent;
-    buf.append(name);
-    buf.append("/");
-    buf.append(filename(ino_out));
-    buf.append("/");
-
-    // store parent
-    ec->put(parent, buf);
-    lc->release(parent);
-    printf("create file, inum: %llu, name: %s\n, parent: %s", ino_out, name, buf.data());
     return r;
 }
 
@@ -321,20 +299,20 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
         goto release;
     }
     printf("mkdir: parent is ok\n");
-    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+    if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
             printf("mkdir: dir name already exists\n");
             r = EXIST;
             goto release;
         }
         else {
-            printf("mkdir: something wrong with lookup\n");
-            r = IOERR;
-            goto release;
+            printf("mkdir: dir is ok to be created\n");
         }
     }
     else {
-        printf("mkdir: dir is ok to be created\n");
+        printf("mkdir: something wrong with lookup\n");
+        r = IOERR;
+        goto release;
     }
     printf("mkdir: creating new inode for dir\n");
     if (ec->create(extent_protocol::T_DIR, ino_out) != extent_protocol::OK) {
@@ -375,6 +353,15 @@ release:
 int
 yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
 {
+    lc->acquire(parent);
+    int r = _lookup(parent, name, found, ino_out);
+    lc->release(parent);
+    return r;
+}
+
+int
+yfs_client::_lookup(inum parent, const char *name, bool &found, inum &ino_out)
+{
     int r = OK;
 
     /*
@@ -382,24 +369,25 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
      * note: lookup file from parent dir according to name;
      * you should design the format of directory content.
      */
-    printf("lookup: job started\n");
+    printf("lookup: lookup %s in dir %llu\n", name, parent);
     std::list<dirent> dir_entries;
-    if (readdir(parent, dir_entries) == extent_protocol::OK) {
+    if (_readdir(parent, dir_entries) == extent_protocol::OK) {
         printf("lookup: readdir returned OK\n");
         std::list<dirent>::iterator it;
         for (it = dir_entries.begin(); it != dir_entries.end(); it++) {
-            printf("look up: extract entry -> name:%s, inum: %llu\n", it->name.c_str(), it->inum);
+            //printf("look up: extract entry -> name:%s, inum: %llu\n", it->name.c_str(), it->inum);
             if (!it->name.compare(name)) {
                 printf("lookup: got match\n");
                 found = true;
                 ino_out = it->inum;
-                r = EXIST;
+                r = OK;
                 printf("lookup: job done\n");
                 return r;
             }
         }
         found = false;
         printf("lookup: no match\n");
+        r = OK;
         printf("lookup: job done\n");
     }
     else {
@@ -413,6 +401,15 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
 int
 yfs_client::readdir(inum dir, std::list<dirent> &list)
 {
+    lc->acquire(dir);
+    int r = _readdir(dir, list);
+    lc->release(dir);
+    return r;
+}
+
+int
+yfs_client::_readdir(inum dir, std::list<dirent> &list)
+{
     int r = OK;
 
     /*
@@ -421,7 +418,7 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
      * and push the dirents to the list.
      */
     // 获取dir这个inode的属性。
-    printf("readdir: job started\n");
+    printf("readdir: read dir %llu\n", dir);
     extent_protocol::attr dir_attributes;
     ec->getattr(dir, dir_attributes);
     // 检查这个inode是不是目录。
@@ -434,7 +431,7 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
         printf("readdir: inode is a dir\n");
         std::string dir_entries;
         ec->get(dir, dir_entries);
-        printf("readdir: got dir entries: %s\n", dir_entries.c_str());
+        printf("readdir: will analyze dir entries: %s\n", dir_entries.c_str());
         std::string entry_name, entry_inum;
         unsigned int former_slash = 0, latter_slash = 0;
         while (former_slash < dir_entries.size()) {
@@ -446,7 +443,7 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
             entry_inum = dir_entries.substr(former_slash, latter_slash - former_slash);
             former_slash = latter_slash + 1;
             // 创建新的entry扔进list里。
-            printf("readdir: extract entry -> name:%s, inum:%s\n", entry_name.c_str(),entry_inum.c_str());
+            printf("readdir: dir%llu/%s --> inode:%s\n", dir, entry_name.c_str(),entry_inum.c_str());
             dirent dir_entry;
             dir_entry.name = entry_name;
             dir_entry.inum = n2i(entry_inum);
@@ -603,12 +600,14 @@ int yfs_client::unlink(inum parent,const char *name)
     if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
         printf("unlink: failed to get parent attributes\n");
         r = IOERR;
-        goto release;
+        lc->release(parent);
+        return r;
     }
     if (inode_attributes.type != extent_protocol::T_DIR) {
         printf("unlink: parent given is not a dir\n");
         r = IOERR;
-        goto release;
+        lc->release(parent);
+        return r;
     }
     printf("unlink: parent is ok\n");
     if (ec->get(parent, parent_entries) == extent_protocol::OK) {
@@ -639,45 +638,55 @@ int yfs_client::unlink(inum parent,const char *name)
                 latter_part = parent_entries.substr(latter_checkpoint);
                 former_part.append(latter_part);
                 parent_entries = former_part;
+                lc->acquire(n2i(entry_inum));
                 if (ec->put(parent, parent_entries) == extent_protocol::OK) {
                     printf("unlink: parent updated\n");
                     printf("unlink: removing inode\n");
                     if (ec->remove(n2i(entry_inum)) == extent_protocol::OK) {
                         printf("unlink: inode removed\n");
+                        lc->release(n2i(entry_inum));
                     }
                     else {
                         r = IOERR;
                         printf("unlink: failed to remove inode\n");
-                        goto release;
+                        lc->release(n2i(entry_inum));
+                        lc->release(parent);
+                        return r;
                     }
                 }
                 else {
                     r = IOERR;
                     printf("unlink: failed to update parent\n");
-                    goto release;
+                    lc->release(parent);
+                    return r;
                 }
             }
             else {
-                r = IOERR;
-                printf("unlink: did't find the file to delete\n");
-                goto release;
+                r = OK;
+                printf("unlink: did't find the file to delete, it may have been deleted\n");
+                lc->release(parent);
+                return r;
             }
             if (ec->put(parent, parent_entries) == extent_protocol::OK) {
-                printf("unlink: parent updated\n");
+                r = OK;
+                printf("unlink: parent updated, job done\n");
+                lc->release(parent);
+                return r;
             }
             else {
                 r = IOERR;
                 printf("unlink: failed to update parent\n");
-                goto release;
+                lc->release(parent);
+                return r;
             }
         }
         else {
             r = IOERR;
             printf("unlink: failed to read parent\n");
-            goto release;
+            lc->release(parent);
+            return r;
         }
-    printf("unlink: job done\n");
-release:
+    printf("unlink: you should not see this message\n");
     lc->release(parent);
     return r;
 }
@@ -701,20 +710,21 @@ int yfs_client::symlink(inum parent, const char *name, const char *link, inum &i
         goto release;
     }
     printf("symlink: parent is ok\n");
-    if (lookup(parent, name, found, ino_out) != extent_protocol::OK) {
+    if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
             printf("symlink: symlink name already exists\n");
             r = EXIST;
             goto release;
         }
         else {
-            printf("symlink: something wrong with lookup\n");
-            r = IOERR;
-            goto release;
+            printf("symlink: symlink is ok to be created\n");
+            
         }
     }
     else {
-        printf("symlink: symlink is ok to be created\n");
+        printf("symlink: something wrong with lookup\n");
+        r = IOERR;
+        goto release;
     }
     printf("symlink: creating inode for symlink\n");
     if (ec->create(extent_protocol::T_SYMLINK, ino_out) != extent_protocol::OK) {
