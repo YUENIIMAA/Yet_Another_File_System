@@ -26,12 +26,13 @@ class lock_server_cache {
     lock_server_cache::lock_status status;
     std::string owner_id;
     // 由于设计上的问题，第二个要锁的客户端（让status从HELD变成REVOKING的那位），
-    // 如果在它的acquire rpc返回前又来一个要同一把锁的客户端，即使通过retry把锁给到它，
-    // 它也会因为acquire被acquire rpc阻塞导致拿到了也用不了，
-    // 陷入一种外部看它是用完了锁的HOLDING、内部看是被挡在了等待它变成HOLDING之前一点的位置的状态，
-    // 当队伍空了，它的acquire rpc返回时，锁早就被撤回了，server认为它已经用好锁了，这时acquire会陷入死循环，永远等待一个不会抵达的锁。
+    // 它的请求会经历acquire-->revoke-->release-->retry-->revoke才会返回，在这之前acquire是全部被阻塞的。
+    // 因此retry操作即使signal了也无法让acquire拿到锁，因为它卡在pthread_cond_wait前面的while循环那，还没睡下去。
+    // 然后retry返回，由于队伍的存在revoke被发送，锁状态仍是HOLDING，原地被撤回。
+    // 然后revoke返回，导致一连串阻塞的释放，acquire收到RETRY睡下去等待，然而锁已经被撤回了，并且server视角认为client是用完了锁主动让出，不会再retry它了，于是睡死。
     // 因此增加了poor_client_id，修改waiting list插入方式为放在前面，当且仅当第二个要锁的客户端在发送revoke前是唯一等待者，发送后有新的等待者时，它会被再次加到队伍的最后面。
-    std::string poor_client_id;
+    // std::string poor_client_id;
+    // 修正：在Patch 1里重写了lock client cache逻辑，已经不需要了。
     std::list<std::string> waiting_list;
   };
   // 和lab2不同的是，lab3假如拿不到锁的话不用在server端睡死，直接送一个RETRY回去就好，所以lab2用的Condition Variable这里就去掉了。

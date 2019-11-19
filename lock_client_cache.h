@@ -28,7 +28,6 @@ class lock_client_cache : public lock_client {
   std::string id;
   // 感觉lab3的带cache的lock客户端对应的是lab2里的lock服务端。
   pthread_mutex_t mutex;
-  std::string ownerOfMutex; // 遭遇了死锁，增加了这个变量看谁拿着锁跪了。
   // 锁的一些状态。
   enum lock_status {
     HOLDING = 0, // 我拿着但没用。
@@ -41,8 +40,8 @@ class lock_client_cache : public lock_client {
   typedef struct clientLock {
     lock_client_cache::lock_status status;
     pthread_cond_t conditionVariable;
-    pthread_cond_t revoke;
-    bool isRevoking; // 用于在release的时候区分是保留在缓存中释放还是释放并且从缓存中移除。
+    bool needRevoke; // 用于在release的时候区分是保留在缓存中释放还是释放并且从缓存中移除。
+    bool pendingAcquire; // 用于避免单个acquire被RPC阻塞无法在revoke前修改HOLDING状态。
   };
   // 锁号到锁。
   std::map<lock_protocol::lockid_t, clientLock> lock_table;
