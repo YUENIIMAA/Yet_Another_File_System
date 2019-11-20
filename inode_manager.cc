@@ -8,55 +8,64 @@ disk::disk()
 }
 
 void
-disk::read_block(blockid_t id, char *buf)
+disk::read_block(blockid_t id, char *buf) //part1A
 {
-  if (id < 0 || id >= BLOCK_NUM || buf == NULL)
-    return;
-
-  memcpy(buf, blocks[id], BLOCK_SIZE);
+  assert(id >= 0 && id < BLOCK_NUM);
+  assert(buf);
+  memcpy(buf,blocks[id],BLOCK_SIZE);
 }
 
 void
-disk::write_block(blockid_t id, const char *buf)
+disk::write_block(blockid_t id, const char *buf) //part1A
 {
-  if (id < 0 || id >= BLOCK_NUM || buf == NULL)
-    return;
-
-  memcpy(blocks[id], buf, BLOCK_SIZE);
+  assert(id >= 0 && id < BLOCK_NUM);
+  assert(buf);
+  memcpy(blocks[id],buf,BLOCK_SIZE);
 }
 
 // block layer -----------------------------------------
 
 // Allocate a free disk block.
 blockid_t
-block_manager::alloc_block()
+block_manager::alloc_block() //Part1B
 {
   /*
    * your code goes here.
    * note: you should mark the corresponding bit in block bitmap when alloc.
    * you need to think about which block you can start to be allocated.
    */
-  blockid_t unallocated_block_id;
+  //check = IBLOCK(INODE_NUM,sb.nblocks) + 1
+  pthread_mutex_lock(&bmlock);
+  uint32_t base = IBLOCK(INODE_NUM,sb.nblocks) + 1;
   // 从inode_table后面的第一个块开始遍历直到找到第一个可以用的块。
-  for (uint32_t i = IBLOCK(INODE_NUM, BLOCK_NUM) + 1; i < BLOCK_NUM; i++) {
-    if (using_blocks[i] == 0) {
-      unallocated_block_id = i;
-      using_blocks[i] = 1;
-      break;
+  for(uint32_t check = 0;check < BLOCK_NUM; check++){
+    if(using_blocks[check + base] == 0){
+      using_blocks[check + base] = 1;
+      pthread_mutex_unlock(&bmlock);
+      return check + base;
     }
   }
-  return unallocated_block_id;
+  pthread_mutex_unlock(&bmlock);
+  return 0;
 }
 
 void
-block_manager::free_block(uint32_t id)
+block_manager::free_block(uint32_t id) //Part1B
 {
   /* 
    * your code goes here.
    * note: you should unmark the corresponding bit in the block bitmap when free.
    */
   // 简单地把块设置成可以被使用即可，感觉可以先不擦除数据。
-  using_blocks[id] = 0;
+  pthread_mutex_lock(&bmlock);
+  if(using_blocks[id] == 0){ // Already freed
+    printf("The block is already freed.\n");
+    pthread_mutex_unlock(&bmlock);
+    return;
+  } else{
+    using_blocks[id] = 0;
+  }
+  pthread_mutex_unlock(&bmlock);
   return;
 }
 
@@ -65,10 +74,10 @@ block_manager::free_block(uint32_t id)
 block_manager::block_manager()
 {
   d = new disk();
-
+  bmlock = PTHREAD_MUTEX_INITIALIZER;
   // format the disk
-  sb.size = BLOCK_SIZE * BLOCK_NUM;
-  sb.nblocks = BLOCK_NUM;
+  sb.size = BLOCK_SIZE * BLOCK_NUM; // = DISK_SIZE = 16M
+  sb.nblocks = BLOCK_NUM; //32K
   sb.ninodes = INODE_NUM;
 
 }
@@ -90,59 +99,56 @@ block_manager::write_block(uint32_t id, const char *buf)
 inode_manager::inode_manager()
 {
   bm = new block_manager();
-  uint32_t root_dir = alloc_inode(extent_protocol::T_DIR);
-  if (root_dir != 1) {
-    printf("\tim: error! alloc first inode %d, should be 1\n", root_dir);
+  imlock = PTHREAD_MUTEX_INITIALIZER;
+  inode* root_dir = get_inode(1);
+  if (root_dir != NULL) {
+    printf("\tim: error! alloc first inode %d, should be 1\n", 0);// Modified
     exit(0);
   }
+  root_dir = (struct inode*)malloc(sizeof(struct inode));
+  root_dir->type = extent_protocol::T_DIR;
+  root_dir->atime = (unsigned) time(0);
+  root_dir->ctime = (unsigned) time(0);
+  root_dir->mtime = (unsigned) time(0);
+  root_dir->size = 0;
+  put_inode(1,root_dir);
 }
 
 /* Create a new file.
  * Return its inum. */
+// 写lab3的时候debug居然能一路de到这里我也是醉了，终于明白了lab3 testb的用意。
+// 当在两个目录下分别海量创建文件时，由于inode未分配，无法给待创建的inode加锁，因为是不同的目录，同时都能拿到parent锁，
+// 于是两个不同的create的RPC就有可能同时调用alloc_inode然后得到相同的inode号，从用户视角就是两个不同的文件指向了相同的inode，自然是错误的。
 uint32_t
-inode_manager::alloc_inode(uint32_t type)
+inode_manager::alloc_inode(uint32_t type) //part1A
 {
   /* 
    * your code goes here.
    * note: the normal inode block should begin from the 2nd inode block.
    * the 1st is used for root_dir, see inode_manager::inode_manager().
    */
-  printf("\tdebug: allocating inode\n");
-  inode_t *new_inode = (inode_t*)malloc(sizeof(inode_t));
-  bzero(new_inode, sizeof(inode_t));
-
-  // 初始化inode的时间戳。
-  unsigned int current_time = (unsigned)time(NULL);
-  new_inode->atime = current_time;
-  new_inode->ctime = current_time;
-  new_inode->mtime = current_time;
-
-  // 初始化inode的大小。
-  new_inode->size = 0;
-
-  // 初始化inode的类型。
-  new_inode->type = type;
-  
-  // inode的inode_to_block暂时不需要初始化。
-
-  //从第1个inode开始查找inod_table中的空位。
-  uint32_t inode_number;
-  inode_t *temp;
-  for (uint32_t i = 1; i < INODE_NUM; i++) { //注意此处要从1开始...
-    temp = get_inode(i);
-    if (temp != NULL) {
-      continue;
-    }
-    else {
-      inode_number = i;
-      put_inode(i, new_inode);
-      break;
+  uint32_t inode_start = 2;
+  uint32_t target = inode_start;
+  inode* new_inode;
+  pthread_mutex_lock(&imlock);
+  //从第2个inode开始查找inod_table中的空位。
+  for(;target < INODE_NUM; target++){
+    new_inode = get_inode(target);
+    if(new_inode == NULL){
+      new_inode = new inode();
+      new_inode->type = (short)type;
+      new_inode->size = 0;
+      new_inode->atime = (unsigned) time(0);
+      new_inode->ctime = (unsigned) time(0);
+      new_inode->mtime = (unsigned) time(0);
+      put_inode(target,new_inode);
+      free(new_inode);
+      pthread_mutex_unlock(&imlock);
+      return target;
     }
   }
-  free(temp);
-  free(new_inode);
-  printf("\tdebug: allocating inode finished\n");
-  return inode_number;
+  pthread_mutex_unlock(&imlock);
+  return 1;
 }
 
 void
@@ -153,13 +159,19 @@ inode_manager::free_inode(uint32_t inum)
    * note: you need to check if the inode is already a freed one;
    * if not, clear it, and remember to write back to disk.
    */
+  pthread_mutex_lock(&imlock);
+  inode* node = get_inode(inum);
   // 拿到想要删除的inode。
-  inode_t *inode = get_inode(inum);
-  if (inode != NULL) {
-    // 把type置零即可使得该inode在alloc_inode时因get_inode返回NULL而复用该inode。
-    inode->type = 0;
-    put_inode(inum, inode);
-  }
+  if (!node || node->type == 0){
+    printf("The inode is already freed.\n");
+    pthread_mutex_unlock(&imlock);
+    return;
+  } 
+  node->type = 0;
+  // 把type置零即可使得该inode在alloc_inode时因get_inode返回NULL而复用该inode。
+  put_inode(inum,node);
+  free(node);
+  pthread_mutex_unlock(&imlock);
   return;
 }
 
@@ -173,7 +185,7 @@ inode_manager::get_inode(uint32_t inum)
   char buf[BLOCK_SIZE];
 
   printf("\tim: get_inode %d\n", inum);
-
+  
   if (inum < 0 || inum >= INODE_NUM) {
     printf("\tim: inum out of range\n");
     return NULL;
@@ -208,6 +220,7 @@ inode_manager::put_inode(uint32_t inum, struct inode *ino)
   ino_disk = (struct inode*)buf + inum%IPB;
   *ino_disk = *ino;
   bm->write_block(IBLOCK(inum, bm->sb.nblocks), buf);
+
 }
 
 #define MIN(a,b) ((a)<(b) ? (a) : (b))
@@ -215,48 +228,62 @@ inode_manager::put_inode(uint32_t inum, struct inode *ino)
 /* Get all the data of a file by inum. 
  * Return alloced data, should be freed by caller. */
 void
-inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
+inode_manager::read_file(uint32_t inum, char **buf_out, int *size) //Part1B
 {
   /*
    * your code goes here.
    * note: read blocks related to inode number inum,
    * and copy them to buf_Out
    */
-  printf("\tdebug: start reading\n");
-  inode_t *inode = get_inode(inum);
-  if (inode != NULL) {
-    printf("\tdebug: vaild inode number checked\n");
-    unsigned int num_of_bytes = inode->size;
-    // 算一下这个inode使用了多少个块。
-    printf("\tdebug: inode size is %u\n", num_of_bytes);
-    unsigned int num_of_blocks_used = num_of_bytes / BLOCK_SIZE;
-    if (num_of_bytes % BLOCK_SIZE != 0) {num_of_blocks_used++;}
-    printf("\tdebug: number of blocks used is %u\n", num_of_blocks_used);
-    
-    *buf_out = new char[num_of_blocks_used * BLOCK_SIZE];
-    bzero(*buf_out, num_of_blocks_used * BLOCK_SIZE);
-    for (unsigned int i = 0; i < NDIRECT && i < num_of_blocks_used; i++) {
-      printf("\tdebug: reading direct block[%u] <-- block[%u]\n", i, inode->blocks[i]);
-      bm->read_block(inode->blocks[i], *buf_out + i * BLOCK_SIZE);
+  inode* node = get_inode(inum);
+  assert(node != NULL);
+  uint32_t fileSize = node->size;
+  *size = node->size;
+  int blocknum = FILE_BLOCK_NUM(*size);
+  if ( blocknum > BLOCK_NUM){
+    return;
+  }
+  char* file_data = (char *)malloc(fileSize);
+  uint32_t readSize = 0;
+  int i = 0;
+  for (; i < NDIRECT && readSize < fileSize; i++){
+    if (readSize + BLOCK_SIZE < fileSize){
+      bm->read_block(node->blocks[i], file_data + readSize);
+      readSize += BLOCK_SIZE;
+    } else{
+      char* buf = (char *) malloc(BLOCK_SIZE);
+      int len = fileSize - readSize;
+      bm->read_block(node->blocks[i],buf);
+      memcpy(file_data + readSize,buf,len);
+      readSize += len;
     }
-    if (num_of_blocks_used > NDIRECT) {
-      uint *indirect_block = new uint[NINDIRECT];
-      bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-      for (unsigned int i = 0; i < num_of_blocks_used - NDIRECT; i++) {
-        printf("\tdebug: reading indirect block[%u] <-- block[%u]\n", i, indirect_block[i]);
-        bm->read_block(indirect_block[i], *buf_out + (NDIRECT + i) * BLOCK_SIZE);
+  }
+  if (readSize < fileSize){
+    blockid_t indirectBlocks[BLOCK_SIZE];
+    bm->read_block(node->blocks[NDIRECT],(char*)indirectBlocks);
+    for(uint32_t j = 0;j < NINDIRECT && readSize < fileSize; j++){
+      blockid_t inblock = indirectBlocks[j];
+      if (readSize + BLOCK_SIZE < fileSize){
+        bm->read_block(inblock,file_data + readSize);
+        readSize += BLOCK_SIZE;
+      } else{
+        char* buf = (char *)malloc(BLOCK_SIZE);
+        int len = fileSize - readSize;
+        bm->read_block(inblock,buf);
+        memcpy(file_data + readSize,buf,len);
+        readSize += len;
       }
     }
-    *size = inode->size;
-    printf("\tdebug: %u written into size\n", inode->size);
-    printf("\tdebug: finished reading\n");
   }
+  node->atime = (unsigned) time(0);
+  put_inode(inum,node);
+  *buf_out = file_data;
   return;
 }
 
 /* alloc/free blocks if needed */
 void
-inode_manager::write_file(uint32_t inum, const char *buf, int size)
+inode_manager::write_file(uint32_t inum, const char *buf, int size) //Part1B
 {
   /*
    * your code goes here.
@@ -264,142 +291,125 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
    * you need to consider the situation when the size of buf 
    * is larger or smaller than the size of original inode
    */
-  printf("\tdebug: start writing\n");
-  inode_t *inode = get_inode(inum);
-  // 修改inode的时间戳。
-  printf("\tdebug: updating time stamp\n");
-  unsigned int current_time = (unsigned)time(NULL);
-  inode->atime = current_time;
-  inode->ctime = current_time;
-  inode->mtime = current_time;
-  printf("\tdebug: time stamp updated\n");
-  // 修改inode的大小。
-  printf("\tdebug: updating size\n");
-  unsigned int old_size = inode->size;
-  inode->size = (unsigned)size;
-  printf("\tdebug: size changed from %u to %u\n", old_size, size);
-  // 计算之前用了多少个块和当前写入需要多少个块。
-  printf("\tdebug: calculating blocks needed\n");
-  unsigned int num_of_blocks_used = old_size / BLOCK_SIZE;
-  if (old_size % BLOCK_SIZE != 0) {num_of_blocks_used++;}
-  printf("\tdebug: num of blocks used %u\n", num_of_blocks_used);
-  unsigned int num_of_blocks_to_use = size / BLOCK_SIZE;
-  if (size % BLOCK_SIZE != 0) num_of_blocks_to_use++; 
-  printf("\tdebug: num of blocks to use %u\n", num_of_blocks_to_use);
-  
-  if (num_of_blocks_to_use > num_of_blocks_used) {
-    // 需要额外分配块的情况。
-    printf("\tdebug: allocating new blocks");
-    if (num_of_blocks_to_use <= NDIRECT) {
-      // 全部新分配的块都在直接块里。
-      printf("[direct blocks only]\n");
-      for (unsigned int i = num_of_blocks_used; i < num_of_blocks_to_use; ++i) {
-        printf("\tdebug: -->allocating block[%d] from %u to ", i, inode->blocks[i]);
-        inode->blocks[i] = bm->alloc_block();
-        printf("%u\n", inode->blocks[i]);
+
+  /*rewrite the function in lab3*/
+  char block[BLOCK_SIZE];
+  char indirect[BLOCK_SIZE];
+  inode_t * ino = get_inode(inum);
+  unsigned int oldBlockNum = (ino->size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  unsigned int newBlockNum = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+  // 需要释放块的情况。
+  if (oldBlockNum > newBlockNum) {
+    if (newBlockNum > NDIRECT) {
+      bm->read_block(ino->blocks[NDIRECT], indirect);
+      for (unsigned int i = newBlockNum; i < oldBlockNum; ++i) {
+        bm->free_block(*((blockid_t *)indirect + (i - NDIRECT)));
       }
-      printf("\tdebug: new blocks allocated\n");
-    }
-    else if (num_of_blocks_used >= NDIRECT) {
-      // 全部新分配的块都在间接块里。
-      printf("[indirect blocks only]\n");
-      uint *indirect_block = new uint[NINDIRECT];
-      bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-      for (unsigned int i = num_of_blocks_used - NDIRECT; i < num_of_blocks_to_use - NDIRECT; i++) {
-        indirect_block[i] = bm->alloc_block();
-      }
-      bm->write_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    }
-    else {
-      // 部分新分配的块在直接块，部分新分配的块在间接块。
-      printf("[direct blocks + indirect blocks]\n");
-      for (unsigned int i = num_of_blocks_used; i < NDIRECT; i++) {
-        inode->blocks[i] = bm->alloc_block();
-      }
-      uint *indirect_block = new uint[NINDIRECT];
-      for (unsigned int i = 0; i < num_of_blocks_to_use - NDIRECT; i++) {
-        indirect_block[i] = bm->alloc_block();
-      }
-      bm->write_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    }
-  }
-  else if (num_of_blocks_to_use < num_of_blocks_used) {
-    printf("\tdebug: freeing no longer used blocks");
-    // 需要释放块的情况。
-    if (num_of_blocks_to_use > NDIRECT) {
-      // 仍要使用间接块，只释放间接块即可。
-      uint *indirect_block = new uint[NINDIRECT];
-      bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-      for (unsigned int i = num_of_blocks_to_use - NDIRECT; i < num_of_blocks_used - NDIRECT; i++) {
-        bm->free_block(indirect_block[i]);
-        indirect_block[i] = NULL;
-      }
-      bm->write_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    }
-    else if (num_of_blocks_used <= NDIRECT) {
-      // 原先就没有间接块，因此只释放直接块就好。
-      for (unsigned int i = num_of_blocks_to_use; i < num_of_blocks_used; i++) {
-        bm->free_block(inode->blocks[i]);
-        inode->blocks[i] = NULL;
-      }
-    }
-    else {
-      // 既要释放间接块又要释放直接块，即释放全部的间接块和部分直接块。
-      uint *indirect_block = new uint[NINDIRECT];
-      bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-      for (unsigned int i = 0; i < num_of_blocks_used - NDIRECT; i++) {
-        bm->free_block(indirect_block[i]);
-        indirect_block[i] = NULL;
-      }
-      // 依次释放完间接块中指向的块之后，把间接块也释放掉。
-      bm->free_block(inode->blocks[NDIRECT]);
-      // 最后释放直接块。
-      for (unsigned int i = num_of_blocks_to_use; i < NDIRECT; i++) {
-        bm->free_block(inode->blocks[i]);
-        inode->blocks[i] = NULL;
+    } else {
+      if (oldBlockNum > NDIRECT) {
+        bm->read_block(ino->blocks[NDIRECT], indirect);
+        for (unsigned int i = NDIRECT; i < oldBlockNum; ++i) {
+          bm->free_block(*((blockid_t *)indirect + (i - NDIRECT)));
+        }
+        bm->free_block(ino->blocks[NDIRECT]);
+        for (unsigned int i = newBlockNum; i < NDIRECT; ++i) {
+          bm->free_block(ino->blocks[i]);
+        }
+      } else {
+        for (unsigned int i = newBlockNum; i < oldBlockNum; ++i) {
+          bm->free_block(ino->blocks[i]);
+        }
       }
     }
   }
-  // 块数不发生变更的情况直接往里写就是了，因此省略。
+
+  // 需要额外分配块的情况。
+  if (newBlockNum > oldBlockNum) {
+    if (newBlockNum <= NDIRECT) {
+      for (unsigned int i = oldBlockNum; i < newBlockNum; ++i) {
+        ino->blocks[i] = bm->alloc_block();
+      }
+    } else {
+      if (oldBlockNum <= NDIRECT) {
+        for (unsigned int i = oldBlockNum; i < NDIRECT; ++i) {
+          ino->blocks[i] = bm->alloc_block();
+        }
+        ino->blocks[NDIRECT] = bm->alloc_block();
+
+        bzero(indirect, BLOCK_SIZE);
+        for (unsigned int i = NDIRECT; i < newBlockNum; ++i) {
+          *((blockid_t *)indirect + (i - NDIRECT)) = bm->alloc_block();
+        }
+        bm->write_block(ino->blocks[NDIRECT], indirect);
+      } else {
+        bm->read_block(ino->blocks[NDIRECT], indirect);
+        for (unsigned int i = oldBlockNum; i < newBlockNum; ++i) {
+          *((blockid_t *)indirect + (i - NDIRECT)) = bm->alloc_block();
+        }
+        bm->write_block(ino->blocks[NDIRECT], indirect);
+      }
+    }
+  }
+
   // 分配完之后开始写入数据。
-  printf("\tdebug: writing direct blocks\n");
-  for (unsigned int i = 0; i < num_of_blocks_to_use && i < NDIRECT; i++) {
-    bm->write_block(inode->blocks[i], buf + i * BLOCK_SIZE);
-  }
-  if (num_of_blocks_to_use > NDIRECT) {
-    printf("\tdebug: writing indirect blocks\n");
-    uint *indirect_block = new uint[NINDIRECT];
-    bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    for (unsigned int i = 0;i < num_of_blocks_to_use - NDIRECT;i++) {
-      bm->write_block(indirect_block[i], buf + (NDIRECT + i) * BLOCK_SIZE);
+  int pos = 0;
+  unsigned int i;
+  for (i = 0; i < NDIRECT && pos < size; i++) {
+    if (size - pos > BLOCK_SIZE) {
+      bm->write_block(ino->blocks[i], buf + pos);
+      pos += BLOCK_SIZE;
+    } else {
+      int len = size - pos;
+      memcpy(block, buf + pos, len);
+      bm->write_block(ino->blocks[i], block);
+      pos += len;
     }
   }
-  printf("\tdebug: updating inode\n");
-  put_inode(inum, inode);
-  printf("\tdebug: finished writing\n");
+
+  if (pos < size) {
+    bm->read_block(ino->blocks[NDIRECT], indirect);
+    for (i = 0; i < NINDIRECT && pos < size; i++) {
+      blockid_t ix = *((blockid_t *)indirect + i);
+      if (size - pos > BLOCK_SIZE) {
+        bm->write_block(ix, buf + pos);
+        pos += BLOCK_SIZE;
+      } else {
+        int len = size - pos;
+        memcpy(block, buf + pos, len);
+        bm->write_block(ix, block);
+        pos += len;
+      }
+    }
+  }
+
+  // 更新inode的时间戳。
+  ino->size = size;
+  ino->mtime = time(0);
+  ino->ctime = time(0);
+  put_inode(inum, ino);
+  free(ino);
   return;
 }
 
 void
-inode_manager::getattr(uint32_t inum, extent_protocol::attr &a)
+inode_manager::getattr(uint32_t inum, extent_protocol::attr &a) //part1A
 {
   /*
    * your code goes here.
    * note: get the attributes of inode inum.
    * you can refer to "struct attr" in extent_protocol.h
    */
-  inode_t *inode = get_inode(inum);
-  if (inode != NULL) {
-    a.atime = inode->atime;
-    a.ctime = inode->ctime;
-    a.mtime = inode->mtime;
-    a.size = inode->size;
-    a.type = inode->type;
+  inode* node = get_inode(inum);
+  if(!node){
     return;
   }
-  else {
-    return;
-  }
+  a.type = node->type;
+  a.atime = node->atime;
+  a.mtime = node->mtime;
+  a.ctime = node->ctime;
+  a.size = node->size;
+  return;
 }
 
 void
@@ -409,28 +419,25 @@ inode_manager::remove_file(uint32_t inum)
    * your code goes here
    * note: you need to consider about both the data block and inode of the file
    */
-  // 删除基本复用之前[direct blocks + indirect blocks]和写入的代码，只不过此处alloc变成free。
-  printf("\tdebug: start deleting\n");
-  inode_t *inode = get_inode(inum);
-  unsigned size = inode->size;
-  printf("\tdebug: calculating blocks needed\n");
-  unsigned int num_of_blocks_to_free = size / BLOCK_SIZE;
-  if (size % BLOCK_SIZE != 0) {num_of_blocks_to_free++;}
-  printf("\tdebug: freeing direct blocks\n");
-  for (unsigned int i = 0; i < num_of_blocks_to_free && i < NDIRECT; i++) {
-    bm->free_block(inode->blocks[i]);
+  // 删除基本复用之前分配和写入的代码，只不过此处alloc变成free。
+  inode* node = get_inode(inum);
+  int blocknum;
+  blocknum = node->size==0 ? 0 : FILE_BLOCK_NUM(node->size);
+  int i = 0;
+  for(; i < blocknum && i < NDIRECT; i++){
+    bm->free_block(node->blocks[i]);
   }
-  if (num_of_blocks_to_free > NDIRECT) {
-    printf("\tdebug: freeing indirect blocks\n");
-    uint *indirect_block = new uint[NINDIRECT];
-    bm->read_block(inode->blocks[NDIRECT], (char *)indirect_block);
-    for (unsigned int i = 0;i < num_of_blocks_to_free - NDIRECT;i++) {
-      bm->free_block(indirect_block[i]);
+  if(i < blocknum){
+    int freeSize = NDIRECT * BLOCK_SIZE;
+    int fileSize = node->size;
+    blockid_t indirectBlocks[BLOCK_SIZE];
+    bm->read_block(node->blocks[NDIRECT],(char *)indirectBlocks); 
+    for(uint32_t i = 0;i < NINDIRECT && freeSize < fileSize; i++,freeSize += BLOCK_SIZE){
+      bm->free_block(indirectBlocks[i]);
     }
-    bm->free_block(inode->blocks[NDIRECT]);
+    bm->free_block(node->blocks[NDIRECT]);
   }
-  printf("\tdebug: freeing inode\n");
   free_inode(inum);
-  printf("\tdebug: finished deleting\n");
+  free(node);
   return;
 }

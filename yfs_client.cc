@@ -13,8 +13,11 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
   ec = new extent_client(extent_dst);
   lc = new lock_client_cache(lock_dst);
-  if (ec->put(1, "") != extent_protocol::OK)
+  lc->acquire(1);
+  if (ec->put(1, "") != extent_protocol::OK) {
       printf("error init root dir\n"); // XYB: init root dir
+  }
+  lc->release(1);
 }
 
 
@@ -38,12 +41,14 @@ yfs_client::filename(inum inum)
 bool
 yfs_client::isfile(inum inum)
 {
+    lc->acquire(inum);
     extent_protocol::attr a;
     if (ec->getattr(inum, a) != extent_protocol::OK) {
         printf("error getting attr\n");
+        lc->release(inum);
         return false;
     }
-
+    lc->release(inum);
     if (a.type == extent_protocol::T_FILE) {
         printf("isfile: %lld is a file\n", inum);
         return true;
@@ -63,12 +68,13 @@ yfs_client::isdir(inum inum)
     // Oops! is this still correct when you implement symlink?
     // 否，因为多了SYMLINK所以非文件并不代表就是目录。
     extent_protocol::attr a;
-
+    lc->acquire(inum);
     if (ec->getattr(inum, a) != extent_protocol::OK) {
         printf("error getting attr\n");
+        lc->release(inum);
         return false;
     }
-
+    lc->release(inum);
     if (a.type == extent_protocol::T_DIR) {
         printf("isdir: %lld is a dir\n", inum);
         return true;
@@ -81,11 +87,9 @@ int
 yfs_client::getfile(inum inum, fileinfo &fin)
 {
     int r = OK;
-
-    // 开始前先那把锁。
-    lc->acquire(inum);
     printf("getfile %016llx\n", inum);
     extent_protocol::attr a;
+    lc->acquire(inum);
     if (ec->getattr(inum, a) != extent_protocol::OK) {
         r = IOERR;
         goto release;
@@ -107,10 +111,9 @@ int
 yfs_client::getdir(inum inum, dirinfo &din)
 {
     int r = OK;
-
-    lc->acquire(inum);
     printf("getdir %016llx\n", inum);
     extent_protocol::attr a;
+    lc->acquire(inum);
     if (ec->getattr(inum, a) != extent_protocol::OK) {
         r = IOERR;
         goto release;
@@ -118,20 +121,19 @@ yfs_client::getdir(inum inum, dirinfo &din)
     din.atime = a.atime;
     din.mtime = a.mtime;
     din.ctime = a.ctime;
-
 release:
     lc->release(inum);
     return r;
 }
 
 
-#define EXT_RPC(xx) do { \
-    if ((xx) != extent_protocol::OK) { \
-        printf("EXT_RPC Error: %s:%d \n", __FILE__, __LINE__); \
-        r = IOERR; \
-        goto release; \
-    } \
-} while (0)
+//#define EXT_RPC(xx) do { \
+//    if ((xx) != extent_protocol::OK) { \
+//        printf("EXT_RPC Error: %s:%d \n", __FILE__, __LINE__); \
+//        r = IOERR; \
+//        goto release; \
+//    } \
+//} while (0)
 
 // Only support set size of attr
 int
@@ -144,22 +146,23 @@ yfs_client::setattr(inum ino, size_t size)
      * note: get the content of inode ino, and modify its content
      * according to the size (<, =, or >) content length.
      */
-    lc->acquire(ino);
     // 现在直到为啥给的代码里要用goto release这样的写法了，不然每个return都要配一个解锁代码。
     // 已全部修改为goto release的写法。
+    // 然后又全部改了回去。
     printf("setattr: job started\n");
     std::string data;
     extent_protocol::attr inode_attributes;
-    if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
-        printf("setattr: failed to get attributes\n");
-        r = IOERR;
-        goto release;
-    }
-    if (inode_attributes.type == 0) {
-        printf("setattr: inode number is invalid\n");
-        r = NOENT;
-        goto release;
-    }
+    lc->acquire(ino);
+    //if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
+    //    printf("setattr: failed to get attributes\n");
+    //    r = IOERR;
+    //    goto release;
+    //}
+    //if (inode_attributes.type == 0) {
+    //    printf("setattr: inode number is invalid\n");
+    //    r = NOENT;
+    //    goto release;
+    //}
     if (ec->get(ino, data) == extent_protocol::OK) {
         printf("setattr: inode data fetched\n");
         if (inode_attributes.size > size) {
@@ -209,21 +212,17 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
     // 有了lock 0我可以保证两个create不会交错执行。
     // 修正：上面的想法就tm是个全局锁沃日。
     // 修正：仔细一想lookup自己拿锁没有任何意义，看一眼放掉那改的时候一定还会有并行的问题、、、拿锁应该是调它的人干的活。
-    
-    lc->acquire(parent);
     printf("create: create %s in dir %llu\n", name, parent);
     bool found;
-    std::string parent_entries;
+    lc->acquire(parent);
     if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
+            lc->release(parent);
             printf("create: file name already exists\n");
             r = EXIST;
-            lc->release(parent);
             return r;
         }
-        else {
-            printf("create: file is ok to be created\n");
-        }
+        printf("create: file is ok to be created\n");
     }
     else {
         printf("create: something wrong with lookup\n");
@@ -231,14 +230,21 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
         lc->release(parent);
         return r;
     }
-    if (ec->create(extent_protocol::T_FILE, ino_out) != extent_protocol::OK) {
+    extent_protocol::extentid_t id;
+    extent_protocol::attr attr;
+    if (ec->create(extent_protocol::T_FILE, id) != extent_protocol::OK) {
         r = IOERR;
         printf("create: failed to create file\n");
         lc->release(parent);
         return r;
     }
     else {
+        ino_out = id;
+        lc->acquire(id);
+        ec->getattr(id, attr);
+        lc->release(id);
         printf("create: file created, new inode id:%llu\n", ino_out);
+        std::string parent_entries;
         if (ec->get(parent, parent_entries) == extent_protocol::OK) {
             printf("create: updating parent\n");
             parent_entries.append(name);
@@ -246,29 +252,29 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
             parent_entries.append(filename(ino_out));
             parent_entries.append("/");
             if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                lc->release(parent);
                 printf("create: parent updated\n");
                 r = OK;
                 printf("create: job done\n");
-                lc->release(parent);
                 return r;
             }
             else {
+                lc->release(parent);
                 r = IOERR;
                 printf("create: failed to update parent\n");
-                lc->release(parent);
                 return r;
             }
         }
         else {
+            lc->release(parent);
             r = IOERR;
             printf("create: failed to read parent\n");
-            lc->release(parent);
             return r;
         }
     }
+    lc->release(parent);
     r = IOERR;
     printf("create: you should not see this message\n");
-    lc->release(parent);
     return r;
 }
 
@@ -282,47 +288,30 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
      * note: lookup is what you need to check if directory exist;
      * after create file or dir, you must remember to modify the parent infomation.
      */
-    lc->acquire(parent);
     printf("mkdir: job started\n");
-    printf("mkdir: checking parent\n");
-    extent_protocol::attr inode_attributes;
-    std::string parent_entries;
     bool found = false;
-    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
-        printf("mkdir: failed to get parent attributes\n");
-        r = IOERR;
-        goto release;
-    }
-    if (inode_attributes.type != extent_protocol::T_DIR) {
-        printf("mkdir: parent given is not a dir\n");
-        r = IOERR;
-        goto release;
-    }
-    printf("mkdir: parent is ok\n");
+    lc->acquire(parent);
     if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
+            lc->release(parent);
             printf("mkdir: dir name already exists\n");
-            r = EXIST;
-            goto release;
+            return EXIST;
         }
-        else {
-            printf("mkdir: dir is ok to be created\n");
-        }
+        printf("mkdir: dir is ok to be created\n");
     }
     else {
+        lc->release(parent);
         printf("mkdir: something wrong with lookup\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
     printf("mkdir: creating new inode for dir\n");
-    if (ec->create(extent_protocol::T_DIR, ino_out) != extent_protocol::OK) {
-        r = IOERR;
+    extent_protocol::extentid_t id;
+    if (ec->create(extent_protocol::T_DIR, id) != extent_protocol::OK) {
         printf("mkdir: failed to create new inode\n");
-        goto release;
+        return IOERR;
     }
-    else {
-        printf("mkdir: new inode created\n");
-    }
+    ino_out = id;
+    std::string parent_entries;
     if (ec->get(parent, parent_entries) == extent_protocol::OK) {
         printf("mkdir: parent inode entries data fetched\n");
         parent_entries.append(name);
@@ -331,21 +320,22 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
         parent_entries.append("/");
         printf("mkdir: updating parent inode entries data\n");
         if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+            lc->release(parent);
             printf("mkdir: parent inode entries data updated\n");
+            return OK;
         }
         else {
-            r = IOERR;
+            lc->release(parent);
             printf("mkdir: failed to update parent inode\n");
-            goto release;
+            return IOERR;
         }
     }
     else {
-        r = IOERR;
+        lc->release(parent);
         printf("mkdir: failed to fetch parent inode data\n");
-        goto release;
+        return IOERR;
     }
     printf("mkdir: job done\n");
-release:
     lc->release(parent);
     return r;
 }
@@ -463,44 +453,42 @@ yfs_client::read(inum ino, size_t size, off_t off, std::string &data)
      * your code goes here.
      * note: read using ec->get().
      */
-    lc->acquire(ino);
     printf("read: job started\n");
-    extent_protocol::attr inode_attributes;
     size_t remaining;
     std::string inode_data;
-    if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
-        printf("read: failed to get attributes\n");
-        r = IOERR;
-        goto release;
-    }
-    if (inode_attributes.type == 0) {
-        printf("read: inode number is invalid\n");
-        r = IOERR;
-        goto release;
-    }
-    if (off >= inode_attributes.size) {
-        printf("read: offset is larger than size\n");
-        r = IOERR;
-        goto release;
-    }
+    //if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
+    //    printf("read: failed to get attributes\n");
+    //    r = IOERR;
+    //    goto release;
+    //}
+    //if (inode_attributes.type == 0) {
+    //    printf("read: inode number is invalid\n");
+    //    r = IOERR;
+    //    goto release;
+    //}
+    lc->acquire(ino);
     if (ec->get(ino, inode_data) != extent_protocol::OK) {
+        lc->release(ino);
         printf("read: failed to read data\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
-    remaining = inode_attributes.size - off;
-    if (remaining >= size) {
-        printf("read: size is ok\n");
-        data = inode_data.substr(off, size);
-    }
-    else {
-        printf("read: read exceeds the size of file\n");
-        data = inode_data.substr(off, remaining);
-    }
-    printf("read: job done\n");
-release:
     lc->release(ino);
-    return r;
+    if ((size_t)off >= inode_data.size()) {
+        printf("read: offset is larger than size\n");
+        return IOERR;
+    }
+    //remaining = inode_data.size() - off;
+    //if (remaining >= size) {
+    //    printf("read: size is ok\n");
+    //    data = inode_data.substr(off, size);
+    //}
+    //else {
+    //    printf("read: read exceeds the size of file\n");
+    //    data = inode_data.substr(off, remaining);
+    //}
+    data = inode_data.substr(off, size);
+    printf("read: job done\n");
+    return OK;
 }
 
 int
@@ -514,48 +502,33 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
      * note: write using ec->put().
      * when off > length of original file, fill the holes with '\0'.
      */
-    lc->acquire(ino);
     printf("write: job started\n");
-    extent_protocol::attr inode_attributes;
-    std::string to_write = "";
     bool needsfill = false;
     std::string inode_data;
-    // 吐槽一下goto release这个写法让我不得不把之前插在中间的定义全部移动到最前面，好担心出错、、、
-    // 补充上面：然后就真的出错了，read中remaining的定义没仔细看就移到前面去结果attr在那个位置还没拿到呢就出错了害得我找了半天、、、
-    if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
-        printf("write: failed to get attributes\n");
-        r = IOERR;
-        goto release;
-    }
-    if (inode_attributes.type == 0) {
-        printf("write: inode number is invalid\n");
-        r = IOERR;
-        goto release;
-    }
+    lc->acquire(ino);
     if (ec->get(ino, inode_data) != extent_protocol::OK) {
+        lc->release(ino);
         printf("write: failed to read data\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
-    if (off > inode_attributes.size) {
+    if ((size_t)off > inode_data.size()) {
         printf("write: offset larger than size\n");
         needsfill = true;
     }
-    for (size_t i = 0; i < size; i++) {
-        to_write = to_write + data[i];
-    }
+    std::string to_write;
+    to_write.assign(data, size);
     if (needsfill) {
         printf("write: preparing data with gap\n");
-        std::string gap(off - inode_attributes.size, '\0');
+        std::string gap(off - inode_data.size(), '\0');
         inode_data.append(gap);
         inode_data.append(to_write);
-        bytes_written = size + off - inode_attributes.size;
+        bytes_written = size + off - inode_data.size();
     }
-    else if (off + size < inode_attributes.size) {
+    else if (off + size < inode_data.size()) {
         printf("write: preparing data with only middle part updated\n");
         std::string former_data, latter_data;
         former_data = inode_data.substr(0, off);
-        latter_data = inode_data.substr(off + size, inode_attributes.size);
+        latter_data = inode_data.substr(off + size, inode_data.size());
         former_data.append(to_write);
         former_data.append(latter_data);
         inode_data = former_data;
@@ -570,16 +543,16 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
         bytes_written = size;
     }
     if (ec->put(ino, inode_data) == extent_protocol::OK) {
+        lc->release(ino);
         printf("write: writing success\n");
+        return OK;
     }
     else {
+        lc->release(ino);
         printf("write: failed to write new inode data\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
     printf("write: job done\n");
-release:
-    lc->release(ino);
     return r;
 }
 
@@ -592,100 +565,72 @@ int yfs_client::unlink(inum parent,const char *name)
      * note: you should remove the file using ec->remove,
      * and update the parent directory content.
      */
-    lc->acquire(parent);
-    printf("unlink: job started\n");
-    printf("unlink: checking parent\n");
-    extent_protocol::attr inode_attributes;
+    printf("unlink: delete %s from dir%llu\n", name, parent);
     std::string parent_entries;
-    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
-        printf("unlink: failed to get parent attributes\n");
-        r = IOERR;
-        lc->release(parent);
-        return r;
-    }
-    if (inode_attributes.type != extent_protocol::T_DIR) {
-        printf("unlink: parent given is not a dir\n");
-        r = IOERR;
-        lc->release(parent);
-        return r;
-    }
-    printf("unlink: parent is ok\n");
+    lc->acquire(parent);
     if (ec->get(parent, parent_entries) == extent_protocol::OK) {
-            printf("unlink: updating parent\n");
-            std::string entry_name, entry_inum;
-            unsigned int former_slash = 0, latter_slash = 0;
-            unsigned int former_checkpoint = 0, latter_checkpoint = 0;
-            bool found = false;
-            while (former_slash < parent_entries.size()) {
-                // 从前一个/开始找下一个/，二者之间的先是name后是inum，应该是成对出现的。
-                former_checkpoint = former_slash;
-                latter_slash = parent_entries.find('/', former_slash);
-                entry_name = parent_entries.substr(former_slash, latter_slash - former_slash);
-                former_slash = latter_slash + 1;
-                latter_slash = parent_entries.find('/', former_slash);
-                entry_inum = parent_entries.substr(former_slash, latter_slash - former_slash);
-                latter_checkpoint = latter_slash + 1;
-                former_slash = latter_slash + 1;
-                // 创建新的entry扔进list里。
-                if (!entry_name.compare(name)) {
-                    found = true;
-                    break;
-                }
+        printf("unlink: updating parent:dir%llu\n", parent);
+        //printf("unlink: old entry:%s\n", parent_entries.c_str());
+        std::string entry_name, entry_inum;
+        unsigned int former_slash = 0, latter_slash = 0;
+        unsigned int former_checkpoint = 0, latter_checkpoint = 0;
+        bool found = false;
+        while (former_slash < parent_entries.size()) {
+            // 从前一个/开始找下一个/，二者之间的先是name后是inum，应该是成对出现的。
+            former_checkpoint = former_slash;
+            latter_slash = parent_entries.find('/', former_slash);
+            entry_name = parent_entries.substr(former_slash, latter_slash - former_slash);
+            former_slash = latter_slash + 1;
+            latter_slash = parent_entries.find('/', former_slash);
+            entry_inum = parent_entries.substr(former_slash, latter_slash - former_slash);
+            latter_checkpoint = latter_slash + 1;
+            former_slash = latter_slash + 1;
+            if (!entry_name.compare(name)) {
+                found = true;
+                break;
             }
-            if (found) {
-                std::string former_part, latter_part;
-                former_part = parent_entries.substr(0, former_checkpoint);
-                latter_part = parent_entries.substr(latter_checkpoint);
-                former_part.append(latter_part);
-                parent_entries = former_part;
+        }
+        if (found) {
+            std::string former_part, latter_part;
+            former_part = parent_entries.substr(0, former_checkpoint);
+            latter_part = parent_entries.substr(latter_checkpoint);
+            former_part.append(latter_part);
+            parent_entries = former_part;
+            //printf("unlink: new entry:%s\n", parent_entries.c_str());
+            if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                printf("unlink: parent updated\n");
+                printf("unlink: removing inode\n");
                 lc->acquire(n2i(entry_inum));
-                if (ec->put(parent, parent_entries) == extent_protocol::OK) {
-                    printf("unlink: parent updated\n");
-                    printf("unlink: removing inode\n");
-                    if (ec->remove(n2i(entry_inum)) == extent_protocol::OK) {
-                        printf("unlink: inode removed\n");
-                        lc->release(n2i(entry_inum));
-                    }
-                    else {
-                        r = IOERR;
-                        printf("unlink: failed to remove inode\n");
-                        lc->release(n2i(entry_inum));
-                        lc->release(parent);
-                        return r;
-                    }
+                if (ec->remove(n2i(entry_inum)) == extent_protocol::OK) {
+                    lc->release(n2i(entry_inum));
+                    lc->release(parent);
+                    printf("unlink: inode removed\n");
+                    return OK;
                 }
                 else {
-                    r = IOERR;
-                    printf("unlink: failed to update parent\n");
+                    lc->release(n2i(entry_inum));
                     lc->release(parent);
-                    return r;
+                    printf("unlink: failed to remove inode\n");
+                    return IOERR;
                 }
             }
             else {
-                r = OK;
-                printf("unlink: did't find the file to delete, it may have been deleted\n");
                 lc->release(parent);
-                return r;
-            }
-            if (ec->put(parent, parent_entries) == extent_protocol::OK) {
-                r = OK;
-                printf("unlink: parent updated, job done\n");
-                lc->release(parent);
-                return r;
-            }
-            else {
-                r = IOERR;
                 printf("unlink: failed to update parent\n");
-                lc->release(parent);
-                return r;
+                return IOERR;
             }
         }
         else {
-            r = IOERR;
-            printf("unlink: failed to read parent\n");
             lc->release(parent);
-            return r;
+            printf("unlink: did't find the file to delete, it may have been deleted\n");
+            return OK;
         }
+    }
+    else {
+        lc->release(parent);
+        printf("unlink: failed to read parent\n");
+        return IOERR;
+    }
     printf("unlink: you should not see this message\n");
     lc->release(parent);
     return r;
@@ -693,53 +638,42 @@ int yfs_client::unlink(inum parent,const char *name)
 
 int yfs_client::symlink(inum parent, const char *name, const char *link, inum &ino_out) {
     int r = OK;
-    lc->acquire(parent);
     printf("symlink: job started\n");
-    printf("symlink: checking parent\n");
-    extent_protocol::attr inode_attributes;
     std::string parent_entries;
     bool found;
-    if (ec->getattr(parent, inode_attributes) != extent_protocol::OK) {
-        printf("symlink: failed to get parent attributes\n");
-        r = IOERR;
-        goto release;
-    }
-    if (inode_attributes.type != extent_protocol::T_DIR) {
-        printf("symlink: parent given is not a dir\n");
-        r = IOERR;
-        goto release;
-    }
-    printf("symlink: parent is ok\n");
+    lc->acquire(parent);
     if (_lookup(parent, name, found, ino_out) == extent_protocol::OK) {
         if (found) {
+            lc->release(parent);
             printf("symlink: symlink name already exists\n");
-            r = EXIST;
-            goto release;
+            return EXIST;
         }
-        else {
-            printf("symlink: symlink is ok to be created\n");
-            
-        }
+        printf("symlink: symlink is ok to be created\n");
     }
     else {
+        lc->release(parent);
         printf("symlink: something wrong with lookup\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
     printf("symlink: creating inode for symlink\n");
-    if (ec->create(extent_protocol::T_SYMLINK, ino_out) != extent_protocol::OK) {
+    extent_protocol::extentid_t id;
+    if (ec->create(extent_protocol::T_SYMLINK, id) != extent_protocol::OK) {
+        lc->release(parent);
         printf("symlink: failed to create symlink\n");
-        r = IOERR;
-        goto release;
+        return IOERR;
     }
     else {
+        ino_out = id;
         printf("symlink: inode for symlink created\n");
+        lc->acquire(id);
         if (ec->put(ino_out, std::string(link)) != extent_protocol::OK) {
+            lc->release(id);
+            lc->release(parent);
             printf("symlink: failed to write the data of symlink\n");
-            r = IOERR;
-            goto release;
+            return IOERR;
         }
         else {
+            lc->release(id);
             printf("symlink: inode for symlink written\n");
             if (ec->get(parent, parent_entries) == extent_protocol::OK) {
                 printf("symlink: updating parent\n");
@@ -748,23 +682,24 @@ int yfs_client::symlink(inum parent, const char *name, const char *link, inum &i
                 parent_entries.append(filename(ino_out));
                 parent_entries.append("/");
                 if (ec->put(parent, parent_entries) == extent_protocol::OK) {
+                    lc->release(parent);
                     printf("symlink: parent updated\n");
+                    return OK;
                 }
                 else {
-                    r = IOERR;
+                    lc->release(parent);
                     printf("symlink: failed to update parent\n");
-                    goto release;
+                    return IOERR;
                 }
             }
             else {
-                r = IOERR;
+                lc->release(parent);
                 printf("symlink: failed to read parent\n");
-                goto release;
+                return IOERR;
             }
         }
     }
     printf("symlink: job done\n");
-release:
     lc->release(parent);
     return r;
 }
@@ -774,12 +709,12 @@ int yfs_client::readlink(inum ino, std::string &link) {
     lc->acquire(ino);
     printf("readlink: job started\n");
     if (ec->get(ino, link) != extent_protocol::OK) {
+        lc->release(ino);
         r = IOERR;
         printf("readlink: failed to get file\n");
-        goto release;
+        return IOERR;
     }
     printf("readlink: job done\n");
-release:
     lc->release(ino);
     return r;
 };

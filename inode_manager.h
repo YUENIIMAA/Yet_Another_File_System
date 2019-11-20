@@ -10,6 +10,8 @@
 #define BLOCK_SIZE 512
 #define BLOCK_NUM  (DISK_SIZE/BLOCK_SIZE)
 
+
+#define FILE_BLOCK_NUM(size) (((size) - 1) / BLOCK_SIZE + 1) 
 typedef uint32_t blockid_t;
 
 // disk layer -----------------------------------------
@@ -36,6 +38,8 @@ class block_manager {
  private:
   disk *d;
   std::map <uint32_t, int> using_blocks;
+  // 增加了互斥防止并发分配相同的数据块。
+  pthread_mutex_t bmlock;
  public:
   block_manager();
   struct superblock sb;
@@ -81,7 +85,8 @@ class inode_manager {
   block_manager *bm;
   struct inode* get_inode(uint32_t inum);
   void put_inode(uint32_t inum, struct inode *ino);
-
+  // 增加了互斥锁防止并发创建相同的inode。
+  pthread_mutex_t imlock;
  public:
   inode_manager();
   uint32_t alloc_inode(uint32_t type);
