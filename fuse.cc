@@ -476,6 +476,17 @@ fuseserver_statfs(fuse_req_t req)
 
 struct fuse_lowlevel_ops fuseserver_oper;
 
+// 
+// 创建一个SYMLINK
+// 根据libfuse.github.io得知
+// "Create a symbolic link"
+// "Valid replies: fuse_reply_entry fuse_reply_err"
+// "Parameters"
+// "req	request handle"
+// "link -> the contents of the symbolic link"
+// "parent -> inode number of the parent directory"
+// "name -> to create"
+//
 void fuseserver_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, 
         const char *name)
 {
@@ -505,6 +516,15 @@ void fuseserver_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
     }
 }
 
+//
+// 读取一个SYMLINK
+// 根据libfuse.github.io得知
+// "Read symbolic link"
+// "Valid replies: fuse_reply_readlink fuse_reply_err"
+// "Parameters"
+// "req -> request handle"
+// "ino -> the inode number"
+//
 void fuseserver_readlink(fuse_req_t req, fuse_ino_t ino){
     yfs_client::inum inum = ino;
     yfs_client::status ret;
