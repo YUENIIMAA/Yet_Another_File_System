@@ -44,6 +44,10 @@ main(int argc, char *argv[])
   server.reg(lock_protocol::stat, &ls, &lock_server_cache::stat);
   server.reg(lock_protocol::release, &ls, &lock_server_cache::release);
   server.reg(lock_protocol::acquire, &ls, &lock_server_cache::acquire);
+  // 注册拿锁和放锁的handler。
+  // server.reg(lock_protocol::acquire, &ls, &lock_server::acquire);
+  // server.reg(lock_protocol::release, &ls, &lock_server::release);
+
 #endif
 
 

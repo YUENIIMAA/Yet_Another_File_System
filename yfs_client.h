@@ -4,7 +4,9 @@
 #include <string>
 
 #include "lock_protocol.h"
-#include "lock_client.h"
+// #include "lock_client.h"
+// 增加带cache功能的lock_client_cache。
+#include "lock_client_cache.h"
 
 //#include "yfs_protocol.h"
 #include "extent_client.h"
@@ -13,7 +15,8 @@
 
 class yfs_client {
   extent_client *ec;
-  lock_client *lc;
+  // 修改为带cache功能的lock_client_cache
+  lock_client_cache *lc;
  public:
 
   typedef unsigned long long inum;
@@ -51,14 +54,18 @@ class yfs_client {
 
   int setattr(inum, size_t);
   int lookup(inum, const char *, bool &, inum &);
+  int _lookup(inum, const char *, bool &, inum &); // 不加锁的lookup
   int create(inum, const char *, mode_t, inum &);
   int readdir(inum, std::list<dirent> &);
+  int _readdir(inum, std::list<dirent> &); // 不加锁的readdir
   int write(inum, size_t, off_t, const char *, size_t &);
   int read(inum, size_t, off_t, std::string &);
   int unlink(inum,const char *);
   int mkdir(inum , const char *, mode_t , inum &);
   
   /** you may need to add symbolic link related methods here.*/
+  int symlink(inum, const char *, const char *, inum &);
+  int readlink(inum, std::string &);
 };
 
 #endif 

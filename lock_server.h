@@ -13,6 +13,13 @@ class lock_server {
 
  protected:
   int nacquire;
+  // 增加一把全局锁
+  pthread_mutex_t mutex;
+  // 增加lid <-> Condition Variable的map，为每个lid维护一个单独的Condition Variable。
+  std::map<lock_protocol::lockid_t, pthread_cond_t> conditionOfLock;
+  // 增加lid <-> inUse的map的map，为每个lid维护一个是否可被授予的状态。
+  std::map<lock_protocol::lockid_t, bool> isLockFree;
+
 
  public:
   lock_server();
