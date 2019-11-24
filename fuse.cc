@@ -492,7 +492,7 @@ void fuseserver_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
 {
     printf("fuseserver symlink\n");
     yfs_client::inum inum;
-    int ret = yfs->symlink(parent,link,name,inum);
+    int ret = yfs->symlink(parent, name, link, inum);
     struct fuse_entry_param e;
     if( ret != extent_protocol::OK){
         if (ret == yfs_client::EXIST) {

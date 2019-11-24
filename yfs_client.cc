@@ -151,27 +151,17 @@ yfs_client::setattr(inum ino, size_t size)
     // 然后又全部改了回去。
     printf("setattr: job started\n");
     std::string data;
-    extent_protocol::attr inode_attributes;
+    //extent_protocol::attr inode_attributes;
     lc->acquire(ino);
-    //if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
-    //    printf("setattr: failed to get attributes\n");
-    //    r = IOERR;
-    //    goto release;
-    //}
-    //if (inode_attributes.type == 0) {
-    //    printf("setattr: inode number is invalid\n");
-    //    r = NOENT;
-    //    goto release;
-    //}
     if (ec->get(ino, data) == extent_protocol::OK) {
         printf("setattr: inode data fetched\n");
-        if (inode_attributes.size > size) {
+        if (data.size() > size) {
             printf("setattr: shrinking data\n");
             data = data.substr(0, size);
         }
-        else if (inode_attributes.size < size) {
+        else if (data.size() < size) {
             printf("setattr: expanding data\n");
-            data.append(std::string(size - inode_attributes.size, '\0'));
+            data.append(std::string(size - data.size(), '\0'));
         }
         else {
             printf("setattr: no need to change data\n");
@@ -456,16 +446,6 @@ yfs_client::read(inum ino, size_t size, off_t off, std::string &data)
     printf("read: job started\n");
     size_t remaining;
     std::string inode_data;
-    //if (ec->getattr(ino, inode_attributes) != extent_protocol::OK) {
-    //    printf("read: failed to get attributes\n");
-    //    r = IOERR;
-    //    goto release;
-    //}
-    //if (inode_attributes.type == 0) {
-    //    printf("read: inode number is invalid\n");
-    //    r = IOERR;
-    //    goto release;
-    //}
     lc->acquire(ino);
     if (ec->get(ino, inode_data) != extent_protocol::OK) {
         lc->release(ino);
@@ -477,15 +457,6 @@ yfs_client::read(inum ino, size_t size, off_t off, std::string &data)
         printf("read: offset is larger than size\n");
         return IOERR;
     }
-    //remaining = inode_data.size() - off;
-    //if (remaining >= size) {
-    //    printf("read: size is ok\n");
-    //    data = inode_data.substr(off, size);
-    //}
-    //else {
-    //    printf("read: read exceeds the size of file\n");
-    //    data = inode_data.substr(off, remaining);
-    //}
     data = inode_data.substr(off, size);
     printf("read: job done\n");
     return OK;
@@ -520,9 +491,10 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
     if (needsfill) {
         printf("write: preparing data with gap\n");
         std::string gap(off - inode_data.size(), '\0');
+        size_t oldSize = inode_data.size();
         inode_data.append(gap);
         inode_data.append(to_write);
-        bytes_written = size + off - inode_data.size();
+        bytes_written = size + off - oldSize;
     }
     else if (off + size < inode_data.size()) {
         printf("write: preparing data with only middle part updated\n");
@@ -638,7 +610,7 @@ int yfs_client::unlink(inum parent,const char *name)
 
 int yfs_client::symlink(inum parent, const char *name, const char *link, inum &ino_out) {
     int r = OK;
-    printf("symlink: job started\n");
+    printf("symlink: create symlink %s-->%s\n", name, link);
     std::string parent_entries;
     bool found;
     lc->acquire(parent);
@@ -666,7 +638,7 @@ int yfs_client::symlink(inum parent, const char *name, const char *link, inum &i
         ino_out = id;
         printf("symlink: inode for symlink created\n");
         lc->acquire(id);
-        if (ec->put(ino_out, std::string(link)) != extent_protocol::OK) {
+        if (ec->put(id, std::string(link)) != extent_protocol::OK) {
             lc->release(id);
             lc->release(parent);
             printf("symlink: failed to write the data of symlink\n");
@@ -679,7 +651,7 @@ int yfs_client::symlink(inum parent, const char *name, const char *link, inum &i
                 printf("symlink: updating parent\n");
                 parent_entries.append(name);
                 parent_entries.append("/");
-                parent_entries.append(filename(ino_out));
+                parent_entries.append(filename(id));
                 parent_entries.append("/");
                 if (ec->put(parent, parent_entries) == extent_protocol::OK) {
                     lc->release(parent);
@@ -706,14 +678,16 @@ int yfs_client::symlink(inum parent, const char *name, const char *link, inum &i
 
 int yfs_client::readlink(inum ino, std::string &link) {
     int r = OK;
+    std::string buf;
     lc->acquire(ino);
     printf("readlink: job started\n");
-    if (ec->get(ino, link) != extent_protocol::OK) {
+    if (ec->get(ino, buf) != extent_protocol::OK) {
         lc->release(ino);
         r = IOERR;
         printf("readlink: failed to get file\n");
         return IOERR;
     }
+    link = buf;
     printf("readlink: job done\n");
     lc->release(ino);
     return r;
