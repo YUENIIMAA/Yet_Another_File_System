@@ -5,6 +5,17 @@
 
 #include "rpc.h"
 
+class rextent_protocol {
+ public:
+  enum xxstatus {OK, RPCERR};
+  typedef int status;
+  enum rpc_numbers {
+    flush = 0x9001,
+    sync,
+    clear
+  };
+};
+
 class extent_protocol {
  public:
   typedef int status;

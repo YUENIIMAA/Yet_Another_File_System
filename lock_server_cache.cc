@@ -121,7 +121,7 @@ lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
     pthread_mutex_unlock(&mutex);
     return ret;
   }
-  if (lock_table[lid].owner_id.compare(id)) { // 检查是否尝试释放一个不属于该客户端的锁。
+  if (lock_table[lid].owner_id.compare(id) != 0) { // 检查是否尝试释放一个不属于该客户端的锁。
     printf("lsc[%s]-r: invalid operation, lock[%llu] doesn't belong to client %s\n", id.c_str(), lid, id.c_str());
     sleep(0);
     ret = lock_protocol::NOENT;

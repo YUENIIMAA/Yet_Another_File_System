@@ -231,7 +231,8 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
     else {
         ino_out = id;
         lc->acquire(id);
-        ec->getattr(id, attr);
+        std::string blank;
+        ec->get(id, blank);
         lc->release(id);
         printf("create: file created, new inode id:%llu\n", ino_out);
         std::string parent_entries;
@@ -400,18 +401,18 @@ yfs_client::_readdir(inum dir, std::list<dirent> &list)
     // 获取dir这个inode的属性。
     printf("readdir: read dir %llu\n", dir);
     extent_protocol::attr dir_attributes;
-    ec->getattr(dir, dir_attributes);
+    //ec->getattr(dir, dir_attributes);
     // 检查这个inode是不是目录。
-    if (dir_attributes.type != extent_protocol::T_DIR) {
-        printf("readdir: inode read is not a dir\n");
-        r = IOERR;
-        return r;
-    }
-    else {
+    //if (dir_attributes.type != extent_protocol::T_DIR) {
+    //    printf("readdir: inode read is not a dir\n");
+    //    r = IOERR;
+    //    return r;
+    //}
+    //else {
         printf("readdir: inode is a dir\n");
         std::string dir_entries;
         ec->get(dir, dir_entries);
-        printf("readdir: will analyze dir entries: %s\n", dir_entries.c_str());
+        //printf("readdir: will analyze dir entries: %s\n", dir_entries.c_str());
         std::string entry_name, entry_inum;
         unsigned int former_slash = 0, latter_slash = 0;
         while (former_slash < dir_entries.size()) {
@@ -423,13 +424,13 @@ yfs_client::_readdir(inum dir, std::list<dirent> &list)
             entry_inum = dir_entries.substr(former_slash, latter_slash - former_slash);
             former_slash = latter_slash + 1;
             // 创建新的entry扔进list里。
-            printf("readdir: dir%llu/%s --> inode:%s\n", dir, entry_name.c_str(),entry_inum.c_str());
+            //printf("readdir: dir%llu/%s --> inode:%s\n", dir, entry_name.c_str(),entry_inum.c_str());
             dirent dir_entry;
             dir_entry.name = entry_name;
             dir_entry.inum = n2i(entry_inum);
             list.push_back(dir_entry);
         }
-    }
+    //}
     printf("readdir: job done\n");
     return r;
 }
